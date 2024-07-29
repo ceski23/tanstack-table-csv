@@ -1,13 +1,17 @@
 import {
+  Cell,
+  CellContext,
+  ColumnDefTemplate,
   createColumnHelper,
   createTable,
   getCoreRowModel,
+  getExpandedRowModel,
   getFilteredRowModel,
   getGroupedRowModel,
   getSortedRowModel,
   Table,
 } from "@tanstack/table-core";
-import { data, DataItem } from "./data";
+import { createDataItem, DataItem } from "./data";
 import deepmerge from "deepmerge";
 import fs from "node:fs/promises";
 
@@ -16,6 +20,11 @@ const renderCsv = <TItem extends Record<string, unknown>>(
   delimiter = ",",
   postProcess?: (values: string[][]) => string[][]
 ) => {
+  const flexRender = (
+    cell: ColumnDefTemplate<CellContext<TItem, string>> | undefined,
+    context: CellContext<TItem, string>
+  ) => (typeof cell === "string" ? cell : cell?.(context));
+
   const headers = table
     .getHeaderGroups()
     .map((headerGroup) =>
@@ -25,17 +34,24 @@ const renderCsv = <TItem extends Record<string, unknown>>(
         )
       )
     );
-  const rows = table
-    .getRowModel()
-    .rows.map((row) =>
-      row
-        .getVisibleCells()
-        .map((cell) =>
-          typeof cell.column.columnDef.cell === "string"
-            ? cell.column.columnDef.cell
-            : cell.column.columnDef.cell?.(cell.getContext())
-        )
-    );
+  const rows = table.getRowModel().rows.map((row) =>
+    row.getVisibleCells().map((cell: Cell<TItem, string>) =>
+      cell.getIsGrouped()
+        ? // If it's a grouped cell, render the regular cell
+          flexRender(cell.column.columnDef.cell, cell.getContext())
+        : cell.getIsAggregated()
+        ? // If the cell is aggregated, use the Aggregated renderer for cell
+          flexRender(
+            cell.column.columnDef.aggregatedCell ?? cell.column.columnDef.cell,
+            cell.getContext()
+          )
+        : cell.getIsPlaceholder()
+        ? // For cells with repeated values, render null
+          null
+        : // Otherwise, just render the regular cell
+          flexRender(cell.column.columnDef.cell, cell.getContext())
+    )
+  );
   const finalValues = postProcess?.([...headers, ...rows]) ?? [
     ...headers,
     ...rows,
@@ -46,7 +62,7 @@ const renderCsv = <TItem extends Record<string, unknown>>(
 
 const columnHelper = createColumnHelper<DataItem>();
 const columns = [
-  columnHelper.group({
+  {
     header: "Name",
     columns: [
       columnHelper.accessor((item) => item.firstName, {
@@ -57,42 +73,54 @@ const columns = [
         id: "lastName",
         header: "Last Name",
       }),
+      columnHelper.accessor((item) => `${item.firstName} ${item.lastName}`, {
+        id: "fullName",
+        header: "Full Name",
+      }),
     ],
-  }),
-  columnHelper.group({
+  },
+  {
     header: "Info",
     columns: [
       columnHelper.accessor((item) => item.visits, {
         id: "visits",
         header: "Visits",
+        cell: ({ getValue }) => `"${getValue().toLocaleString("en")}"`,
+        aggregatedCell: ({ getValue }) =>
+          `"${getValue().toLocaleString("en")}"`,
       }),
       columnHelper.accessor((item) => item.status, {
         id: "status",
         header: "Status",
       }),
-      columnHelper.display({
+      columnHelper.accessor((item) => (item.age >= 18 ? "Yes" : "No"), {
         id: "isAdult",
         header: "Is adult?",
-        cell: ({ row }) => (row.original.age >= 18 ? "Yes" : "No"),
       }),
     ],
-  }),
+  },
 ];
 
 const table = createTable({
+  // columns: columns.flatMap((col) => col.columns ?? []),
   columns,
-  data,
+  data: Array.from({ length: 100 }, createDataItem),
   getCoreRowModel: getCoreRowModel(),
   getSortedRowModel: getSortedRowModel(),
   getFilteredRowModel: getFilteredRowModel(),
   getGroupedRowModel: getGroupedRowModel(),
+  getExpandedRowModel: getExpandedRowModel(),
   onStateChange: () => {},
   renderFallbackValue: "N/A",
-  state: {
+  state: {},
+  debugTable: true,
+  initialState: {
     sorting: [{ id: "visits", desc: true }],
-    columnFilters: [{ id: "status", value: "Single" }],
+    // columnFilters: [{ id: "status", value: "Single" }],
     columnPinning: { left: ["status"] },
-    columnOrder: ["lastName", "firstName", "visits", "status", "isAdult"],
+    // columnOrder: ["lastName", "firstName", "visits", "status", "isAdult"],
+    grouping: ["isAdult"],
+    expanded: true,
   },
 });
 
@@ -103,12 +131,12 @@ table.setOptions((prev) =>
 );
 
 const csv = renderCsv(table, ",", (values) => [
-  ...Object.entries({
-    This: "is",
-    some: "random",
-    extra: "data",
-  }),
-  [],
+  // ...Object.entries({
+  //   This: "is",
+  //   some: "random",
+  //   extra: "data",
+  // }),
+  // [],
   ...values,
 ]);
 
